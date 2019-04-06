@@ -1,38 +1,44 @@
 package main
 
 import (
-   "log"
-   "fmt"
-   "net/http"
+	"fmt"
+	"github.com/latdev/httpxd/handlers/exchange"
+	"github.com/latdev/httpxd/system/syslogger"
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/gorilla/mux"
+	"github.com/latdev/httpxd/system/syscore"
+	"github.com/latdev/httpxd/handlers/users"
 )
-
-
-func errorResponse(writer http.ResponseWriter, code int) {
-   const template string = `{"success":0,code:7%d,"message":"%s"}`
-   var message string = "uncnown code";
-   switch (code) {
-   case 404:
-      message = "document not found"
-      break
-   }
-   http.Error(writer, fmt.Sprintf(template, code, message), code)
-}
 
 func main() {
 
-   http.HandleFunc("/t", func(w http.ResponseWriter, r *http.Request) {
-      fmt.Fprint(w, "hello")
-   })
+	if director, err := syscore.New(); err == nil {
+		defer director.Close()
 
-   http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-      if r.URL.Path == "/" {
-         fmt.Fprint(w, `{"succes":1,"message":"ok"}`)
-      } else {
-         errorResponse(w, 404)
-      }
-   })
+		router := mux.NewRouter().StrictSlash(true)
+		router.NotFoundHandler = director.MuxServeNotFound()
+		router.HandleFunc("/favicon.ico", func(wr http.ResponseWriter, _ *http.Request) {
+			wr.Header().Set("Content-Type", "image/x-icon")
+			wr.Header().Set("Cache-Control", "public, max-age=7776000")
+			fmt.Fprintln(wr, "data:image/x-icon;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQEAYAAABPYyMiAAAABmJLR0T///////8JWPfcAAAACXBIWXMAAABIAAAASABGyWs+AAAAF0lEQVRIx2NgGAWjYBSMglEwCkbBSAcACBAAAeaR9cIAAAAASUVORK5CYII=\n")
+		}).Methods("GET", "HEAD")
+		router.PathPrefix("/io/exchange/").Handler(http.StripPrefix("/io/exchange", &exchange.Handler{CoreDirector: director}))
+		router.PathPrefix("/io/user/").Handler(http.StripPrefix("/io/user", &users.Handler{CoreDirector: director}))
 
-   log.Println("Starting server on :8032")
-   log.Fatalf("cannot start server %v",
-         http.ListenAndServe(":8032", nil))
+		server := &http.Server{
+			Addr:           director.Settings.Server.Binding,
+			Handler:        &syslogger.Handler{Next: router},
+			ReadTimeout:    time.Duration(director.Settings.Server.ReadTimeout) * time.Second,
+			WriteTimeout:   time.Duration(director.Settings.Server.WriteTimeout) * time.Second,
+			MaxHeaderBytes: int(director.Settings.Server.MaxHeaderBytes),
+		}
+
+		log.Printf("starting server on %s", server.Addr)
+		log.Fatal(server.ListenAndServe())
+	} else {
+		log.Fatal(err)
+	}
 }
